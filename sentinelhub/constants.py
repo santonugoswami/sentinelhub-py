@@ -400,7 +400,7 @@ class MimeType(Enum):
     """ Enum class to represent supported image file formats
 
     Supported file formats are TIFF 8-bit, TIFF 16-bit, TIFF 32-bit float, PNG, JPEG, JPEG2000, JSON, CSV, ZIP, HDF5,
-    XML, GML, RAW
+    XML, GML, NPY, RAW
     """
     TIFF = 'tiff'
     TIFF_d8 = 'tiff;depth=8'
@@ -417,6 +417,7 @@ class MimeType(Enum):
     GML = 'gml'
     TXT = 'txt'
     RAW = 'raw'
+    NPY = 'npy'
     SAFE = 'safe'
     REQUESTS_RESPONSE = 'response'  # http://docs.python-requests.org/en/master/api/#requests.Response
 

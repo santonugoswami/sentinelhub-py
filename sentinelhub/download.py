@@ -236,8 +236,7 @@ def execute_download_request(request):
     while try_num > 0:
         try:
             if request.is_aws_s3():
-                response = _do_aws_request(request)
-                response_content = response['Body'].read()
+                response_content = _do_aws_request(request)
             else:
                 response = _do_request(request)
                 response.raise_for_status()
@@ -308,8 +307,15 @@ def _do_aws_request(request):
             raise ValueError('Failed to create a client for download from AWS')
         s3_client = DownloadRequest.GLOBAL_AWS_CLIENT
 
+    s3_config = boto3.s3.transfer.TransferConfig(
+        max_concurrency=16,
+    )  # TODO: This parameter(s) should be adjusted
+    bytes_data = BytesIO()
     try:
-        return s3_client.get_object(Bucket=bucket_name, Key=url_key, RequestPayer='requester')
+        s3_client.download_fileobj(Bucket=bucket_name, Key=url_key, Fileobj=bytes_data, Config=s3_config,
+                                   ExtraArgs={'RequestPayer': 'requester'})  # TODO: RequestPayer is not needed always
+        bytes_data.seek(0)
+        return bytes_data
     except NoCredentialsError:
         raise ValueError('The requested data is in Requester Pays AWS bucket. In order to download the data please set '
                          'your access key either in AWS credentials file or in sentinelhub config.json file using '
@@ -385,11 +391,15 @@ def _save_if_needed(request, response_content):
     :param request: Download request
     :type request: DownloadRequest
     :param response_content: content of the download response
-    :type response_content: bytes
+    :type response_content: bytes or BytesIO
     """
     if request.save_response:
         file_path = request.get_file_path()
         create_parent_folder(file_path)
+
+        if isinstance(response_content, BytesIO):
+            response_content = response_content.getvalue()
+
         with open(file_path, 'wb') as file:
             file.write(response_content)
         LOGGER.debug('Saved data from %s to %s', request.url, file_path)
@@ -399,7 +409,7 @@ def decode_data(response_content, data_type, entire_response=None):
     """ Interprets downloaded data and returns it.
 
     :param response_content: downloaded data (i.e. json, png, tiff, xml, zip, ... file)
-    :type response_content: bytes
+    :type response_content: bytes or BytesIO
     :param data_type: expected downloaded data type
     :type data_type: constants.MimeType
     :param entire_response: A response obtained from execution of download request
@@ -416,15 +426,23 @@ def decode_data(response_content, data_type, entire_response=None):
         return json.loads(response_content.decode('utf-8'))
     if MimeType.is_image_format(data_type):
         return decode_image(response_content, data_type)
+    if data_type is MimeType.NPY:
+        if isinstance(response_content, bytes):
+            response_content = BytesIO(response_content)
+        return np.load(response_content)
     if data_type is MimeType.XML or data_type is MimeType.GML or data_type is MimeType.SAFE:
+        if isinstance(response_content, BytesIO):
+            response_content = response_content.getvalue()
         return ElementTree.fromstring(response_content)
-
+    if data_type is MimeType.ZIP:
+        if isinstance(response_content, bytes):
+            response_content = BytesIO(response_content)
+        return response_content
     try:
         return {
             MimeType.RAW: response_content,
             MimeType.TXT: response_content,
-            MimeType.REQUESTS_RESPONSE: entire_response,
-            MimeType.ZIP: BytesIO(response_content)
+            MimeType.REQUESTS_RESPONSE: entire_response
         }[data_type]
     except KeyError:
         raise ValueError('Unknown response data type {}'.format(data_type))
@@ -442,15 +460,16 @@ def decode_image(data, image_type):
     :rtype: numpy array
     :raises: ImageDecodingError
     """
-    bytes_data = BytesIO(data)
+    if not isinstance(data, BytesIO):
+        data = BytesIO(data)
     if image_type.is_tiff_format():
-        image = tiff.imread(bytes_data)
+        image = tiff.imread(data)
     else:
-        image = np.array(Image.open(bytes_data))
+        image = np.array(Image.open(data))
 
         if image_type is MimeType.JP2:
             try:
-                bit_depth = get_jp2_bit_depth(bytes_data)
+                bit_depth = get_jp2_bit_depth(data)
                 image = fix_jp2_image(image, bit_depth)
             except ValueError:
                 pass
